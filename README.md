@@ -1,3 +1,5 @@
+<img width="1774" height="887" alt="image" src="https://github.com/user-attachments/assets/2279e08a-3b7c-4cda-b912-b4d15da07350" />
+
 # Paster++
 
 Remote console copy/paste utility.
