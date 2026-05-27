@@ -8,6 +8,8 @@
 #define VC_EXTRALEAN
 #include <windows.h>
 #include <commctrl.h>
+#include <mmsystem.h>
 #include <string>
 #include <regex>
 #include <cmath>
+#include <fstream>

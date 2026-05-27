@@ -12,6 +12,16 @@ if (NOT CMAKE_BUILD_TYPE)
 	set(CMAKE_BUILD_TYPE Release CACHE STRING "Build type" FORCE)
 endif()
 
+option(PASTER_PASTE_LOG "Enable per-character paste diagnostic log" OFF)
+if (PASTER_PASTE_LOG)
+	add_compile_definitions(PASTER_PASTE_LOG=1)
+endif()
+
+option(PASTER_NO_PROGRESS "Disable progress-bar updates during paste (diagnostic)" OFF)
+if (PASTER_NO_PROGRESS)
+	add_compile_definitions(PASTER_NO_PROGRESS=1)
+endif()
+
 #set(TOOLCHAIN_PREFIX x86_64-w64-mingw32-g++)
 IF (MINGW)
 	message(status: " ** MINGW detected.. **")
@@ -25,5 +35,8 @@ set (HEADERS src/paster-plus-plus.h)
 set (RESOURCES src/paster-plus-plus.rc)
 # Add source to this project's executable.
 add_executable (Paster-plus-plus WIN32 ${SOURCES} ${HEADERS} ${RESOURCES})
+
+# winmm is required for timeBeginPeriod/timeEndPeriod (~1ms Sleep resolution).
+target_link_libraries (Paster-plus-plus PRIVATE winmm)
 
 # TODO: Add tests and install targets if needed.
