@@ -39,7 +39,7 @@ static int g_speed_level = 3;  // 1..5
 
 #define SPEED_INDICATOR_TIMER_ID    100
 
-#define ProgressBarSize             0.02            // Size of the screen in percentage to use for progress bar to adopt for various screen resoultions.
+#define ProgressBarSize             0.03            // Size of the screen in percentage to use for progress bar to adopt for various screen resoultions.
 #define ProgressBarFont             "Consolas"      // Font for the progress bar text
 #define VK_V                        0x56            // Virtual-Key code for V
 #define VK_Q                        0x51            // Virtual-Key code for Q
@@ -248,7 +248,7 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam) 
             return 0;
         }
     }
-    return DefWindowProc(hwnd, uMsg, wParam, lParam);
+    return DefWindowProcA(hwnd, uMsg, wParam, lParam);
 }
 //################################################################################################################
 // Progress bar.
@@ -269,7 +269,7 @@ class ProgressBar_handler {
 public:
     ProgressBar_handler();
     ~ProgressBar_handler();
-    void Begin();
+    void Begin(int max);
     void Update(int progress, int max);
     void End();
 private:
@@ -278,60 +278,55 @@ private:
     int ScreenHeight;
     int height_px;
     DWORD last_invalidate_tick;
-    // Painted state read by BarWndProc — single instance, single thread,
-    // volatile for visibility across the message-pump boundary.
-    static volatile LONG s_progress;
-    static volatile LONG s_max;
-    // Cached GDI resources used by BarWndProc on every WM_PAINT (~30 fps
-    // during paste). Created once in ctor, released in dtor — avoids the
-    // earlier per-paint Create/Delete churn.
-    static HBRUSH s_fgBrush;
-    static HBRUSH s_bgBrush;
-    static HFONT  s_hFont;
+    LONG s_progress;
+    LONG s_max;
+    // 32bpp DIB section drawn into via a memory DC, pushed to DWM via
+    // UpdateLayeredWindow each frame.
+    HDC     m_hdcMem;
+    HBITMAP m_hBitmap;
+    HBRUSH  m_fgBrush;
+    HBRUSH  m_bgBrush;
+    HFONT   m_hFont;
     static LRESULT CALLBACK BarWndProc(HWND, UINT, WPARAM, LPARAM);
+    void PaintFrame();
+    void PushFrame();
 };
 
-volatile LONG ProgressBar_handler::s_progress = 0;
-volatile LONG ProgressBar_handler::s_max = 1;
-HBRUSH ProgressBar_handler::s_fgBrush = NULL;
-HBRUSH ProgressBar_handler::s_bgBrush = NULL;
-HFONT  ProgressBar_handler::s_hFont   = NULL;
-
 LRESULT CALLBACK ProgressBar_handler::BarWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
-    switch (msg) {
-        case WM_PAINT: {
-            PAINTSTRUCT ps;
-            HDC hdc = BeginPaint(hwnd, &ps);
-            RECT rc;
-            GetClientRect(hwnd, &rc);
-            int width = rc.right - rc.left;
-            int height = rc.bottom - rc.top;
-            LONG p = s_progress;
-            LONG m = (s_max > 0) ? s_max : 1;
-            int fill_w = (int)((LONGLONG)width * p / m);
-            if (fill_w < 0) fill_w = 0;
-            if (fill_w > width) fill_w = width;
+    return DefWindowProcA(hwnd, msg, wParam, lParam);
+}
 
-            RECT fg_rc = { 0, 0, fill_w, height };
-            FillRect(hdc, &fg_rc, s_fgBrush);
-            RECT bg_rc = { fill_w, 0, width, height };
-            FillRect(hdc, &bg_rc, s_bgBrush);
+void ProgressBar_handler::PaintFrame() {
+    if (!m_hdcMem) return;
+    int width  = ScreenWidth;
+    int height = height_px;
+    LONG p = s_progress;
+    LONG m = (s_max > 0) ? s_max : 1;
+    int fill_w = (int)((LONGLONG)width * p / m);
+    if (fill_w < 0) fill_w = 0;
+    if (fill_w > width) fill_w = width;
 
-            SetBkMode(hdc, TRANSPARENT);
-            SetTextColor(hdc, RGB(255, 255, 255));
-            HFONT oldFont = (HFONT)SelectObject(hdc, s_hFont);
-            char text[64];
-            snprintf(text, sizeof(text), " %ld / %ld", (long)p, (long)m);
-            DrawTextA(hdc, text, -1, &rc, DT_LEFT | DT_VCENTER | DT_SINGLELINE);
-            SelectObject(hdc, oldFont);
+    RECT fg_rc = { 0, 0, fill_w, height };
+    FillRect(m_hdcMem, &fg_rc, m_fgBrush);
+    RECT bg_rc = { fill_w, 0, width, height };
+    FillRect(m_hdcMem, &bg_rc, m_bgBrush);
 
-            EndPaint(hwnd, &ps);
-            return 0;
-        }
-        case WM_ERASEBKGND:
-            return 1;  // we paint everything in WM_PAINT — skip default erase
-    }
-    return DefWindowProc(hwnd, msg, wParam, lParam);
+    SetBkMode(m_hdcMem, TRANSPARENT);
+    SetTextColor(m_hdcMem, RGB(255, 255, 255));
+    HFONT oldFont = (HFONT)SelectObject(m_hdcMem, m_hFont);
+    char text[64];
+    snprintf(text, sizeof(text), " %ld / %ld", (long)p, (long)m);
+    RECT rc = { 0, 0, width, height };
+    DrawTextA(m_hdcMem, text, -1, &rc, DT_LEFT | DT_VCENTER | DT_SINGLELINE);
+    SelectObject(m_hdcMem, oldFont);
+}
+
+void ProgressBar_handler::PushFrame() {
+    if (!hwnd || !m_hdcMem) return;
+    SIZE  size = { ScreenWidth, height_px };
+    POINT src  = { 0, 0 };
+    UpdateLayeredWindow(hwnd, NULL, NULL, &size, m_hdcMem, &src,
+                        0, NULL, ULW_OPAQUE);
 }
 
 ProgressBar_handler::ProgressBar_handler() {
@@ -340,14 +335,17 @@ ProgressBar_handler::ProgressBar_handler() {
     height_px = (int)(ScreenHeight * ProgressBarSize);
     last_invalidate_tick = 0;
 
-    // GDI resources used by BarWndProc — created once.
-    if (!s_fgBrush) s_fgBrush = CreateSolidBrush(RGB(0, 0, 255));
-    if (!s_bgBrush) s_bgBrush = CreateSolidBrush(RGB(40, 40, 40));
-    if (!s_hFont)   s_hFont   = CreateFontA(height_px - 2, 0, 0, 0, FW_BOLD,
-                                            FALSE, FALSE, FALSE,
-                                            ANSI_CHARSET, OUT_DEFAULT_PRECIS,
-                                            CLIP_DEFAULT_PRECIS, DEFAULT_QUALITY,
-                                            DEFAULT_PITCH | FF_SWISS, ProgressBarFont);
+    s_progress = 0;
+    s_max = 1;
+    m_hdcMem = NULL;
+    m_hBitmap = NULL;
+    m_fgBrush = CreateSolidBrush(RGB(0, 0, 255));
+    m_bgBrush = CreateSolidBrush(RGB(40, 40, 40));
+    m_hFont   = CreateFontA(height_px - 2, 0, 0, 0, FW_BOLD,
+                            FALSE, FALSE, FALSE,
+                            ANSI_CHARSET, OUT_DEFAULT_PRECIS,
+                            CLIP_DEFAULT_PRECIS, DEFAULT_QUALITY,
+                            DEFAULT_PITCH | FF_SWISS, ProgressBarFont);
 
     // Register the legacy "myWindowClass" — SpeedIndicator_handler still uses
     // it and historically depends on this class being registered first.
@@ -372,23 +370,43 @@ ProgressBar_handler::ProgressBar_handler() {
     wc.lpszClassName = barCls;
     RegisterClassExA(&wc);
 
-    // Create at FULL screen width, fixed height, HIDDEN. The window stays this
-    // size for the process lifetime — no SetWindowPos during paste.
-    hwnd = CreateWindowExA(WS_EX_TOPMOST | WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE,
+    hwnd = CreateWindowExA(WS_EX_TOPMOST | WS_EX_TOOLWINDOW | WS_EX_LAYERED,
                            barCls, "Paster++ progress",
                            WS_POPUP,
                            0, 0, ScreenWidth, height_px,
                            NULL, NULL, GetModuleHandle(NULL), NULL);
+    if (!hwnd) return;
+
+    HDC hdcScreen = GetDC(NULL);
+    m_hdcMem = CreateCompatibleDC(hdcScreen);
+    ReleaseDC(NULL, hdcScreen);
+
+    BITMAPINFO bmi = {0};
+    bmi.bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
+    bmi.bmiHeader.biWidth = ScreenWidth;
+    bmi.bmiHeader.biHeight = -height_px;   // top-down
+    bmi.bmiHeader.biPlanes = 1;
+    bmi.bmiHeader.biBitCount = 32;
+    bmi.bmiHeader.biCompression = BI_RGB;
+    void* pPixels = NULL;
+    m_hBitmap = CreateDIBSection(m_hdcMem, &bmi, DIB_RGB_COLORS, &pPixels, NULL, 0);
+    if (m_hBitmap) SelectObject(m_hdcMem, m_hBitmap);
 }
 
-void ProgressBar_handler::Begin() {
+void ProgressBar_handler::Begin(int max) {
     s_progress = 0;
-    s_max = 1;
-    if (hwnd) {
-        InvalidateRect(hwnd, NULL, FALSE);
-        ShowWindow(hwnd, SW_SHOWNOACTIVATE);
-        UpdateWindow(hwnd);
+    s_max = (max > 0) ? (LONG)max : 1;
+    if (!hwnd) return;
+    HWND fg = GetForegroundWindow();
+    if (fg && fg != hwnd) {
+        SetWindowLongPtrA(hwnd, GWLP_HWNDPARENT, (LONG_PTR)fg);
     }
+    SetWindowPos(hwnd, HWND_TOPMOST, 0, 0, ScreenWidth, height_px,
+                 SWP_NOACTIVATE);
+    PaintFrame();
+    PushFrame();
+    ShowWindow(hwnd, SW_SHOWNOACTIVATE);
+    PushFrame();
 }
 
 void ProgressBar_handler::Update(int progress, int max) {
@@ -398,10 +416,8 @@ void ProgressBar_handler::Update(int progress, int max) {
     bool is_last = (progress + 1 >= max);
     if (!is_last && (now - last_invalidate_tick) < 33) return;  // ~30 fps cap
     last_invalidate_tick = now;
-    if (hwnd) {
-        InvalidateRect(hwnd, NULL, FALSE);
-        UpdateWindow(hwnd);
-    }
+    PaintFrame();
+    PushFrame();
 }
 
 void ProgressBar_handler::End() {
@@ -409,10 +425,12 @@ void ProgressBar_handler::End() {
 }
 
 ProgressBar_handler::~ProgressBar_handler() {
-    if (hwnd) DestroyWindow(hwnd);
-    if (s_fgBrush) { DeleteObject(s_fgBrush); s_fgBrush = NULL; }
-    if (s_bgBrush) { DeleteObject(s_bgBrush); s_bgBrush = NULL; }
-    if (s_hFont)   { DeleteObject(s_hFont);   s_hFont   = NULL; }
+    if (hwnd)     DestroyWindow(hwnd);
+    if (m_hBitmap) DeleteObject(m_hBitmap);
+    if (m_hdcMem)  DeleteDC(m_hdcMem);
+    if (m_fgBrush) DeleteObject(m_fgBrush);
+    if (m_bgBrush) DeleteObject(m_bgBrush);
+    if (m_hFont)   DeleteObject(m_hFont);
 }
 
 //################################################################################################################
@@ -441,8 +459,8 @@ SpeedIndicator_handler::SpeedIndicator_handler() : hwnd(NULL), hwndText(NULL) {
     int y = 0;
 
     HINSTANCE hInst = GetModuleHandle(NULL);
-    hwnd = CreateWindowExA(WS_EX_TOPMOST | WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE,
-                           "myWindowClass", "Speed", WS_POPUP,
+    hwnd = CreateWindowExA(WS_EX_TOPMOST | WS_EX_TOOLWINDOW,
+                           "myWindowClass", "Speed", WS_POPUP | WS_DLGFRAME,
                            x, y, w, h, NULL, NULL, hInst, NULL);
     if (!hwnd) return;
 
@@ -461,6 +479,10 @@ void SpeedIndicator_handler::Show(int level) {
     if (!hwnd) return;
     std::string text = constants::PRODUCT_NAME + " speed:\r\n" + std::to_string(level);
     SendMessageA(hwndText, WM_SETTEXT, 0, (LPARAM)text.c_str());
+    HWND fg = GetForegroundWindow();
+    if (fg && fg != hwnd) {
+        SetWindowLongPtrA(hwnd, GWLP_HWNDPARENT, (LONG_PTR)fg);
+    }
     ShowWindow(hwnd, SW_SHOWNOACTIVATE);
     UpdateWindow(hwnd);
     // Restart the auto-hide timer (KillTimer is a no-op if it's not running).
@@ -681,11 +703,11 @@ HotKey_handler::HotKey_handler() {
                 kbdEmulator->ResetShiftKeys();
                 // kbdEmulator's ctor already activated INPUT_LOCALE_ENGLISH;
                 // no need to re-call force_eng_kbd_layout() here.
-                Sleep(500);  // give the user time to release CTRL+ALT+V
                 size_t size = clipboard->GetClipBoardSize();
 #ifndef PASTER_NO_PROGRESS
-                progress_bar.Begin();
+                progress_bar.Begin((int)size);   // show bar with correct max before settle Sleep
 #endif
+                Sleep(500);  // give the user time to release CTRL+ALT+V
 #ifdef PASTER_PASTE_LOG
                 g_paste_log.open(paste_log_path(), std::ios::out | std::ios::trunc);
                 g_paste_log_t0 = GetTickCount();
@@ -701,11 +723,22 @@ HotKey_handler::HotKey_handler() {
                     g_paste_log << "# t_ms\tch\tsc\tshift\tpre/hold/post\n";
                 }
 #endif
+                // Prime GetAsyncKeyState's "pressed since last call" bit so
+                // a stale pre-paste ESC press doesn't trigger immediately.
+                GetAsyncKeyState(VK_ESCAPE);
                 for (size_t i = 0; i < size; i++) {
 #ifndef PASTER_NO_PROGRESS
                     progress_bar.Update((int) i, (int) size);
 #endif
                     kbdEmulator->SendKey(clipboard->GetNextChar());
+                    // ESC = abort. Never injected by SendKey (VkKeyScanW returns
+                    // -1 for control chars), so safe regardless of clipboard.
+                    // Mask 0x8001 = currently down OR pressed-since-last-poll,
+                    // catches fast taps that happen between two polls.
+                    if (GetAsyncKeyState(VK_ESCAPE) & 0x8001) {
+                        kbdEmulator->ResetShiftKeys();
+                        break;
+                    }
                 }
 #ifndef PASTER_NO_PROGRESS
                 progress_bar.End();
@@ -791,7 +824,7 @@ LRESULT CALLBACK StartupDialogProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lP
             DestroyWindow(hwnd);
             return 0;
     }
-    return DefWindowProc(hwnd, msg, wParam, lParam);
+    return DefWindowProcA(hwnd, msg, wParam, lParam);
 }
 
 static BOOL CALLBACK set_child_font(HWND child, LPARAM lp) {
@@ -898,7 +931,7 @@ int APIENTRY wWinMain(_In_ HINSTANCE hInstance, _In_opt_ HINSTANCE hPrevInstance
         g_speed_level = chosen;
         save_speed_to_config(g_speed_level);
     }
-    std::string MsgBoxText = "This utility lets you paste content from clipboard into a remote console\n\nUsage:\nCTRL+ALT+V to paste.\nCTRL+ALT+Q to quit.\nCTRL+ALT++ / CTRL+ALT+- to adjust paste speed (1=slowest, 5=fastest, default=3).\n\nFor more info: " + constants::PRODUCT_INFO;
+    std::string MsgBoxText = "This utility lets you paste content from clipboard into a remote console\n\nUsage:\nCTRL+ALT+V to paste.\nCTRL+ALT+Q to quit.\nCTRL+ALT++ / CTRL+ALT+- to adjust paste speed (1=slowest, 5=fastest, default=3).\nESC to abort a paste in progress.\n\nFor more info: " + constants::PRODUCT_INFO;
     std::string MsxBoxCaption = constants::PRODUCT_NAME + " " + constants::PRODUCT_VERSION + " by " + constants::PRODUCT_AUTHOR;
 
     MessageBoxA(NULL, MsgBoxText.c_str(), MsxBoxCaption.c_str(), MB_OK | MB_ICONINFORMATION | MB_TOPMOST | MB_SETFOREGROUND | MB_DEFAULT_DESKTOP_ONLY);
