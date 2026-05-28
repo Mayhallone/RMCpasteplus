@@ -36,6 +36,7 @@ static const SpeedTiming kSpeedTimings[5] = {
 };
 
 static int g_speed_level = 3;  // 1..5
+static int g_first_char_delay_sec = 0;  // 0..10 — extra wait after hotkey before first char
 
 #define SPEED_INDICATOR_TIMER_ID    100
 
@@ -92,7 +93,7 @@ std::string get_config_path() {
     return p + constants::CONFIG_FILENAME;
 }
 
-void save_speed_to_config(int level) {
+void save_config() {
     std::ofstream f(get_config_path());
     if (!f) return;
     f << "# Paster++ configuration\r\n";
@@ -104,60 +105,65 @@ void save_speed_to_config(int level) {
     f << "#   4 = fast     (~20 chars/sec, ~50 ms per char)\r\n";
     f << "#   5 = fastest  (~25 chars/sec, ~40 ms per char) - upper limit for reliable scancode injection\r\n";
     f << "#\r\n";
+    f << "# first_char_delay: extra seconds to wait after CTRL+ALT+V is\r\n";
+    f << "# pressed before sending the first character (integer, 0..10).\r\n";
+    f << "# Useful when the target window needs time to gain focus or react.\r\n";
+    f << "#\r\n";
     f << "# Speed can also be changed at runtime with CTRL+ALT++ / CTRL+ALT+-\r\n";
     f << "# This file is rewritten on every speed change.\r\n";
-    f << "#\r\n";
     f << "# Lines starting with # are comments and are ignored.\r\n";
     f << "\r\n";
-    f << "speed = " << level << "\r\n";
+    f << "speed = " << g_speed_level << "\r\n";
+    f << "first_char_delay = " << g_first_char_delay_sec << "\r\n";
 }
 
-// Parse the speed value from the config file. Accepts both the new
-// `speed = N` format and a legacy bare integer on its own line.
-// Returns -1 if the file is missing or contains no valid value.
-static int parse_speed_from_config() {
+// Parse the config file. Recognised keys: `speed` (1..5) and
+// `first_char_delay` (0..10). Legacy bare-integer line is treated as speed.
+// Unknown / invalid values are silently ignored — globals keep their defaults.
+// Returns true if the file existed and was readable.
+static bool parse_config() {
     std::ifstream f(get_config_path());
-    if (!f) return -1;
+    if (!f) return false;
     std::string line;
     while (std::getline(f, line)) {
         size_t start = line.find_first_not_of(" \t\r");
-        if (start == std::string::npos) continue;   // blank line
-        if (line[start] == '#') continue;           // comment
+        if (start == std::string::npos) continue;
+        if (line[start] == '#') continue;
 
-        // Try `key = value`.
         size_t eq = line.find('=', start);
-        if (eq != std::string::npos) {
-            std::string key = line.substr(start, eq - start);
-            size_t kend = key.find_last_not_of(" \t");
-            if (kend != std::string::npos) key.erase(kend + 1);
-            if (key == "speed") {
-                size_t vs = line.find_first_not_of(" \t", eq + 1);
-                if (vs != std::string::npos) {
-                    try {
-                        int v = std::stoi(line.substr(vs));
-                        if (v >= 1 && v <= 5) return v;
-                    } catch (...) {}
-                }
-            }
-            continue;  // unknown key — skip
+        if (eq == std::string::npos) {
+            // Legacy bare-integer line → speed.
+            try {
+                int v = std::stoi(line.substr(start));
+                if (v >= 1 && v <= 5) g_speed_level = v;
+            } catch (...) {}
+            continue;
         }
 
-        // Legacy bare-integer line.
+        std::string key = line.substr(start, eq - start);
+        size_t kend = key.find_last_not_of(" \t");
+        if (kend != std::string::npos) key.erase(kend + 1);
+        size_t vs = line.find_first_not_of(" \t", eq + 1);
+        if (vs == std::string::npos) continue;
         try {
-            int v = std::stoi(line.substr(start));
-            if (v >= 1 && v <= 5) return v;
+            int v = std::stoi(line.substr(vs));
+            if (key == "speed" && v >= 1 && v <= 5) {
+                g_speed_level = v;
+            } else if (key == "first_char_delay" && v >= 0 && v <= 10) {
+                g_first_char_delay_sec = v;
+            }
         } catch (...) {}
     }
-    return -1;
+    return true;
 }
 
-// Load speed from config (or fall back to 3) and always rewrite the file so
-// the on-disk format is upgraded with the commented header on first launch.
-void init_speed_from_config() {
-    int v = parse_speed_from_config();
-    if (v < 1 || v > 5) v = 3;
-    g_speed_level = v;
-    save_speed_to_config(g_speed_level);
+// Initialise both speed and delay globals from the config file. Returns
+// true if the config file existed, false if defaults were used. Always
+// rewrites the file afterwards so the on-disk format stays current.
+bool init_config() {
+    bool existed = parse_config();
+    save_config();
+    return existed;
 }
 
 
@@ -708,6 +714,9 @@ HotKey_handler::HotKey_handler() {
                 progress_bar.Begin((int)size);   // show bar with correct max before settle Sleep
 #endif
                 Sleep(500);  // give the user time to release CTRL+ALT+V
+                if (g_first_char_delay_sec > 0) {
+                    Sleep((DWORD)g_first_char_delay_sec * 1000);
+                }
 #ifdef PASTER_PASTE_LOG
                 g_paste_log.open(paste_log_path(), std::ios::out | std::ios::trunc);
                 g_paste_log_t0 = GetTickCount();
@@ -755,14 +764,14 @@ HotKey_handler::HotKey_handler() {
             else if (msg.wParam == FASTER_KEYID || msg.wParam == FASTER_NUM_KEYID) {
                 if (g_speed_level < 5) {
                     g_speed_level++;
-                    save_speed_to_config(g_speed_level);
+                    save_config();
                 }
                 speed_ind.Show(g_speed_level);
             }
             else if (msg.wParam == SLOWER_KEYID || msg.wParam == SLOWER_NUM_KEYID) {
                 if (g_speed_level > 1) {
                     g_speed_level--;
-                    save_speed_to_config(g_speed_level);
+                    save_config();
                 }
                 speed_ind.Show(g_speed_level);
             }
@@ -925,11 +934,16 @@ int APIENTRY wWinMain(_In_ HINSTANCE hInstance, _In_opt_ HINSTANCE hPrevInstance
         timeEndPeriod(1);
         return 0;
     }
-    init_speed_from_config();
-    int chosen = show_startup_speed_dialog(g_speed_level);
-    if (chosen != g_speed_level) {
-        g_speed_level = chosen;
-        save_speed_to_config(g_speed_level);
+    bool config_existed = init_config();
+    if (!config_existed) {
+        // First run — let the user pick the speed once. Subsequent launches
+        // read it straight from the config file. first_char_delay defaults
+        // to 0 and can be tuned later by editing paster-plus-plus.cfg.
+        int chosen = show_startup_speed_dialog(g_speed_level);
+        if (chosen != g_speed_level) {
+            g_speed_level = chosen;
+            save_config();
+        }
     }
     std::string MsgBoxText = "This utility lets you paste content from clipboard into a remote console\n\nUsage:\nCTRL+ALT+V to paste.\nCTRL+ALT+Q to quit.\nCTRL+ALT++ / CTRL+ALT+- to adjust paste speed (1=slowest, 5=fastest, default=3).\nESC to abort a paste in progress.\n\nFor more info: " + constants::PRODUCT_INFO;
     std::string MsxBoxCaption = constants::PRODUCT_NAME + " " + constants::PRODUCT_VERSION + " by " + constants::PRODUCT_AUTHOR;
