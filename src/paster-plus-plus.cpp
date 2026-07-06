@@ -13,7 +13,7 @@
 
 namespace constants {
     const std::string PRODUCT_NAME = "Paster++";
-    const std::string PRODUCT_VERSION = "v1.0";
+    const std::string PRODUCT_VERSION = "v1.1";
     const std::string PRODUCT_INFO = "https://github.com/Mayhallone/RMCpasteplus";
     const std::string PRODUCT_UPSTREAM = "https://github.com/hacke78/Paster-plus-plus";
     const std::string PRODUCT_AUTHOR = "Daniel Alfredsson (upstream) / Mayhallone (fork)";

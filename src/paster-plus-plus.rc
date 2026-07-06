@@ -8,8 +8,8 @@
 IDI_MAIN ICON "pasteicon.ico"
 
 VS_VERSION_INFO VERSIONINFO
- FILEVERSION    1,0,0,0
- PRODUCTVERSION 1,0,0,0
+ FILEVERSION    1,1,0,0
+ PRODUCTVERSION 1,1,0,0
  FILEFLAGSMASK  VS_FFI_FILEFLAGSMASK
 #ifdef _DEBUG
  FILEFLAGS      VS_FF_DEBUG
@@ -26,12 +26,12 @@ BEGIN
         BEGIN
             VALUE "CompanyName",      "Mayhallone (fork of Daniel Alfredsson)"
             VALUE "FileDescription",  "Paster++ remote console paste utility (Mayhallone fork)"
-            VALUE "FileVersion",      "1.0.0.0"
+            VALUE "FileVersion",      "1.1.0.0"
             VALUE "InternalName",     "Paster-plus-plus"
             VALUE "LegalCopyright",   "Copyright (C) 2021 Daniel Alfredsson, (C) 2025 Mayhallone"
             VALUE "OriginalFilename", "Paster-plus-plus.exe"
             VALUE "ProductName",      "Paster++"
-            VALUE "ProductVersion",   "1.0.0.0"
+            VALUE "ProductVersion",   "1.1.0.0"
         END
     END
     BLOCK "VarFileInfo"
