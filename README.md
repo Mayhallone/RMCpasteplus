@@ -23,7 +23,7 @@ Notice!! Do not press anything on the keyboard or move the focus from the remote
 
 ## Installation
 
-Download a pre-compiled .exe version from: https://github.com/hacke78/Paster-plus-plus/releases
+Download a pre-compiled .exe version from: https://github.com/Mayhallone/RMCpasteplus/releases
 
 ## How to build
 
@@ -39,11 +39,11 @@ apt install cmake git mingw-w64
 ```
 Clone the source code
 ```
-git clone https://github.com/hacke78/Paster-plus-plus
+git clone https://github.com/Mayhallone/RMCpasteplus
 ```
 Create a build directory
 ```
-cd Paster-plus-plus
+cd RMCpasteplus
 mkdir build
 cd build
 ```
@@ -63,6 +63,10 @@ You will now have a single .exe file in the build directory (Paster-plus-plus.ex
 ## Contributing
 
 Pull requests are very welcome. For major changes, please open an issue first to discuss what you would like to change.
+
+## Credits
+
+This project is a fork of [Paster++](https://github.com/hacke78/Paster-plus-plus) by Daniel Alfredsson (`daniel@alfredsson.nu`). All original copyright and design belongs to him — this fork adds additional features (system-tray icon, ...) while keeping the original MIT license.
 
 ## License
 [MIT](https://choosealicense.com/licenses/mit/)

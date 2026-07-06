@@ -9,6 +9,7 @@
 #include <windows.h>
 #include <commctrl.h>
 #include <mmsystem.h>
+#include <shellapi.h>
 #include <string>
 #include <regex>
 #include <cmath>

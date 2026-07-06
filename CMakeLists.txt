@@ -23,20 +23,31 @@ if (PASTER_NO_PROGRESS)
 endif()
 
 #set(TOOLCHAIN_PREFIX x86_64-w64-mingw32-g++)
-IF (MINGW)
-	message(status: " ** MINGW detected.. **")
+if (MINGW)
+	message(STATUS " ** MINGW detected.. **")
 	set(CMAKE_CXX_FLAGS "-municode -mwindows -static ${CMAKE_CXX_FLAGS}")
-ENDIF()
+endif()
 
 set (CMAKE_RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR})
-include_directories(${CMAKE_SOURCE_DIR}/src)
 set (SOURCES src/paster-plus-plus.cpp)
 set (HEADERS src/paster-plus-plus.h)
 set (RESOURCES src/paster-plus-plus.rc)
 # Add source to this project's executable.
 add_executable (Paster-plus-plus WIN32 ${SOURCES} ${HEADERS} ${RESOURCES})
 
+target_include_directories (Paster-plus-plus PRIVATE
+	${CMAKE_SOURCE_DIR}/src
+	${CMAKE_SOURCE_DIR}   # so the .rc can reference pasteicon.ico at repo root
+)
+
+# MinGW's windres does not automatically pick up target_include_directories,
+# so pass the repo root explicitly via --include-dir for the RC compiler.
+if (MINGW)
+	set (CMAKE_RC_FLAGS "${CMAKE_RC_FLAGS} --include-dir ${CMAKE_SOURCE_DIR}")
+endif()
+
 # winmm is required for timeBeginPeriod/timeEndPeriod (~1ms Sleep resolution).
-target_link_libraries (Paster-plus-plus PRIVATE winmm)
+# shell32 provides Shell_NotifyIcon for the tray-icon integration.
+target_link_libraries (Paster-plus-plus PRIVATE winmm shell32)
 
 # TODO: Add tests and install targets if needed.

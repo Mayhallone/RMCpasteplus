@@ -2,6 +2,8 @@
 // Paster++ 
 //
 // Copyright (C) Daniel Alfredsson, daniel@alfredsson.nu, 2021-2026
+// Copyright (C) Mayhallone, 2025 (fork maintainer — system-tray integration
+// and related additions). MIT-licensed; see LICENSE.
 
 #include "paster-plus-plus.h"
 
@@ -12,8 +14,9 @@
 namespace constants {
     const std::string PRODUCT_NAME = "Paster++";
     const std::string PRODUCT_VERSION = "v1.0";
-    const std::string PRODUCT_INFO = "https://github.com/hacke78/Paster-plus-plus";
-    const std::string PRODUCT_AUTHOR = "Daniel Alfredsson";
+    const std::string PRODUCT_INFO = "https://github.com/Mayhallone/RMCpasteplus";
+    const std::string PRODUCT_UPSTREAM = "https://github.com/hacke78/Paster-plus-plus";
+    const std::string PRODUCT_AUTHOR = "Daniel Alfredsson (upstream) / Mayhallone (fork)";
     const std::string PRODUCT_AUTHOR_EMAIL = "daniel@alfredsson.nu";
     const std::string CONFIG_FILENAME = "paster-plus-plus.cfg";
 }
@@ -496,6 +499,296 @@ void SpeedIndicator_handler::Show(int level) {
     SetTimer(hwnd, SPEED_INDICATOR_TIMER_ID, 2000, NULL);
 }
 
+//################################################################################################################
+// System-tray (notification-area) icon.
+//
+// Purpose: give the user a persistent visual indication that Paster++ is
+// running, plus a right-click menu (About / Speed / First-char delay /
+// Quit) as an alternative to remembering the hotkeys.
+//
+// Wiring:
+//   * A hidden top-level window is created on the current thread. A real
+//     HWND (not HWND_MESSAGE) is required so we also receive the
+//     "TaskbarCreated" broadcast Explorer sends after a restart — needed
+//     to re-register the icon so it survives Explorer crashes.
+//   * Shell_NotifyIcon posts WM_APP_TRAY to that HWND for mouse events.
+//   * The existing GetMessage/DispatchMessage loop in HotKey_handler
+//     picks up those messages transparently (they land on the same
+//     thread queue as WM_HOTKEY).
+//   * Menu items dispatch through TrackPopupMenu with TPM_RETURNCMD, so
+//     the selected id is returned inline without needing WM_COMMAND.
+//################################################################################################################
+
+#ifndef IDI_MAIN
+#define IDI_MAIN 101   // must match the ICON id in paster-plus-plus.rc
+#endif
+
+#define WM_APP_TRAY (WM_APP + 1)
+
+class TrayIcon_handler {
+public:
+    enum {
+        IDM_ABOUT       = 40001,
+        IDM_QUIT        = 40002,
+        IDM_SPEED_BASE  = 40100,   // 40101..40105 = speed 1..5
+        IDM_DELAY_BASE  = 40200,   // 40201..40211 = delay 0..10
+    };
+
+    // speed_ind may be nullptr; if provided, menu speed changes reuse the
+    // existing on-screen speed indicator so both entry points behave the
+    // same way as the hotkey path.
+    TrayIcon_handler(SpeedIndicator_handler* speed_ind)
+        : hwnd_(NULL), hIcon_(NULL), wm_taskbar_created_(0),
+          speed_ind_(speed_ind), icon_added_(false)
+    {
+        HINSTANCE hInst = GetModuleHandle(NULL);
+
+        static const char cls[] = "PasterTrayReceiver";
+        WNDCLASSEXA wc = {0};
+        wc.cbSize = sizeof(wc);
+        wc.lpfnWndProc = TrayWndProc;
+        wc.hInstance = hInst;
+        wc.lpszClassName = cls;
+        // Ignore ERROR_CLASS_ALREADY_EXISTS — harmless on re-entry.
+        RegisterClassExA(&wc);
+
+        hwnd_ = CreateWindowExA(0, cls, "PasterTrayReceiver",
+                                0, 0, 0, 0, 0,
+                                NULL, NULL, hInst, this);
+        if (!hwnd_) return;
+        // Associate `this` with the HWND so TrayWndProc can dispatch to
+        // instance methods.
+        SetWindowLongPtrA(hwnd_, GWLP_USERDATA, (LONG_PTR)this);
+
+        // Prefer a small-icon-sized variant from the resource (falls back
+        // to whatever the ICO best-matches). LR_SHARED avoids the need
+        // for DestroyIcon.
+        int cx = GetSystemMetrics(SM_CXSMICON);
+        int cy = GetSystemMetrics(SM_CYSMICON);
+        hIcon_ = (HICON)LoadImageA(hInst, MAKEINTRESOURCEA(IDI_MAIN),
+                                   IMAGE_ICON, cx, cy,
+                                   LR_DEFAULTCOLOR | LR_SHARED);
+        if (!hIcon_) {
+            // Resource missing — fall back to the generic system icon so
+            // the tray still shows *something*.
+            hIcon_ = LoadIcon(NULL, IDI_APPLICATION);
+        }
+
+        // Explorer restart notification. RegisterWindowMessage returns
+        // the same id for the same string across all processes.
+        wm_taskbar_created_ = RegisterWindowMessageA("TaskbarCreated");
+
+        AddIcon();
+        ShowStartupBalloon();
+    }
+
+    ~TrayIcon_handler() {
+        if (icon_added_) {
+            NOTIFYICONDATAA nid = {0};
+            nid.cbSize = sizeof(nid);
+            nid.hWnd = hwnd_;
+            nid.uID = 1;
+            Shell_NotifyIconA(NIM_DELETE, &nid);
+            icon_added_ = false;
+        }
+        if (hwnd_) DestroyWindow(hwnd_);
+        // hIcon_ loaded with LR_SHARED — do not call DestroyIcon.
+    }
+
+    // Refresh the tooltip to reflect current speed/delay. Called from the
+    // hotkey path after speed changes, and from the tray menu itself.
+    void UpdateTooltip() {
+        if (!icon_added_) return;
+        NOTIFYICONDATAA nid = {0};
+        nid.cbSize = sizeof(nid);
+        nid.hWnd = hwnd_;
+        nid.uID = 1;
+        nid.uFlags = NIF_TIP;
+        BuildTooltip(nid.szTip, sizeof(nid.szTip));
+        Shell_NotifyIconA(NIM_MODIFY, &nid);
+    }
+
+    // One-shot info balloon on startup — the "app is running" indicator.
+    void ShowStartupBalloon() {
+        if (!icon_added_) return;
+        NOTIFYICONDATAA nid = {0};
+        nid.cbSize = sizeof(nid);
+        nid.hWnd = hwnd_;
+        nid.uID = 1;
+        nid.uFlags = NIF_INFO;
+        nid.dwInfoFlags = NIIF_INFO;
+        std::string title = constants::PRODUCT_NAME + " is running";
+        strncpy_s(nid.szInfoTitle, sizeof(nid.szInfoTitle),
+                  title.c_str(), _TRUNCATE);
+        strncpy_s(nid.szInfo, sizeof(nid.szInfo),
+                  "Ctrl+Alt+V to paste. Right-click the tray icon for options.",
+                  _TRUNCATE);
+        Shell_NotifyIconA(NIM_MODIFY, &nid);
+    }
+
+private:
+    static LRESULT CALLBACK TrayWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
+        TrayIcon_handler* self =
+            (TrayIcon_handler*)GetWindowLongPtrA(hwnd, GWLP_USERDATA);
+
+        if (self && msg == WM_APP_TRAY) {
+            UINT event = LOWORD(lParam);
+            if (event == WM_RBUTTONUP || event == WM_CONTEXTMENU) {
+                self->ShowContextMenu();
+            }
+            else if (event == WM_LBUTTONDBLCLK) {
+                self->HandleCommand(IDM_ABOUT);
+            }
+            return 0;
+        }
+        if (self && self->wm_taskbar_created_ &&
+            msg == self->wm_taskbar_created_)
+        {
+            // Explorer restarted — re-register the icon.
+            self->AddIcon();
+            self->UpdateTooltip();
+            return 0;
+        }
+        return DefWindowProcA(hwnd, msg, wParam, lParam);
+    }
+
+    bool AddIcon() {
+        NOTIFYICONDATAA nid = {0};
+        nid.cbSize = sizeof(nid);
+        nid.hWnd = hwnd_;
+        nid.uID = 1;
+        nid.uFlags = NIF_ICON | NIF_MESSAGE | NIF_TIP;
+        nid.uCallbackMessage = WM_APP_TRAY;
+        nid.hIcon = hIcon_;
+        BuildTooltip(nid.szTip, sizeof(nid.szTip));
+        BOOL ok = Shell_NotifyIconA(NIM_ADD, &nid);
+        icon_added_ = (ok != FALSE);
+        return icon_added_;
+    }
+
+    void BuildTooltip(char* buf, size_t n) {
+        // szTip fits 128 chars — keep well under.
+        snprintf(buf, n,
+                 "%s %s - speed %d, delay %ds - Ctrl+Alt+V",
+                 constants::PRODUCT_NAME.c_str(),
+                 constants::PRODUCT_VERSION.c_str(),
+                 g_speed_level,
+                 g_first_char_delay_sec);
+    }
+
+    void ShowContextMenu() {
+        HMENU hMenu = CreatePopupMenu();
+        if (!hMenu) return;
+
+        std::string header = constants::PRODUCT_NAME + " " + constants::PRODUCT_VERSION;
+        AppendMenuA(hMenu, MF_STRING | MF_GRAYED, 0, header.c_str());
+        AppendMenuA(hMenu, MF_SEPARATOR, 0, NULL);
+
+        // Speed submenu — 5 items, current level checked.
+        HMENU hSpeed = CreatePopupMenu();
+        static const char* speed_labels[5] = {
+            "1 - Slowest (~5 c/s)",
+            "2 - Slow (~8 c/s)",
+            "3 - Normal (~12 c/s)",
+            "4 - Fast (~20 c/s)",
+            "5 - Fastest (~25 c/s)",
+        };
+        for (int i = 0; i < 5; i++) {
+            UINT flags = MF_STRING;
+            if ((i + 1) == g_speed_level) flags |= MF_CHECKED;
+            AppendMenuA(hSpeed, flags, IDM_SPEED_BASE + i + 1, speed_labels[i]);
+        }
+        AppendMenuA(hMenu, MF_POPUP | MF_STRING, (UINT_PTR)hSpeed, "Paste speed");
+
+        // First-char delay submenu — 0..10 seconds, current delay checked.
+        HMENU hDelay = CreatePopupMenu();
+        for (int i = 0; i <= 10; i++) {
+            char label[32];
+            if (i == 0)      snprintf(label, sizeof(label), "0 seconds (no delay)");
+            else if (i == 1) snprintf(label, sizeof(label), "1 second");
+            else             snprintf(label, sizeof(label), "%d seconds", i);
+            UINT flags = MF_STRING;
+            if (i == g_first_char_delay_sec) flags |= MF_CHECKED;
+            AppendMenuA(hDelay, flags, IDM_DELAY_BASE + i + 1, label);
+        }
+        AppendMenuA(hMenu, MF_POPUP | MF_STRING, (UINT_PTR)hDelay, "First-char delay");
+
+        AppendMenuA(hMenu, MF_SEPARATOR, 0, NULL);
+        AppendMenuA(hMenu, MF_STRING, IDM_ABOUT, "About Paster++...");
+        AppendMenuA(hMenu, MF_SEPARATOR, 0, NULL);
+        AppendMenuA(hMenu, MF_STRING, IDM_QUIT, "Quit Paster++");
+
+        // Win32 gotcha: without SetForegroundWindow, the popup does not
+        // dismiss on click-away. The trailing WM_NULL PostMessage flushes
+        // any leftover mouse state so the menu closes cleanly.
+        POINT pt;
+        GetCursorPos(&pt);
+        SetForegroundWindow(hwnd_);
+        UINT cmd = TrackPopupMenu(hMenu,
+                                  TPM_RIGHTBUTTON | TPM_RETURNCMD | TPM_NONOTIFY,
+                                  pt.x, pt.y, 0, hwnd_, NULL);
+        PostMessage(hwnd_, WM_NULL, 0, 0);
+        DestroyMenu(hMenu);
+
+        if (cmd != 0) HandleCommand((WORD)cmd);
+    }
+
+    void HandleCommand(WORD cmd) {
+        if (cmd == IDM_QUIT) {
+            PostQuitMessage(0);
+            return;
+        }
+        if (cmd == IDM_ABOUT) {
+            std::string caption =
+                constants::PRODUCT_NAME + " " + constants::PRODUCT_VERSION;
+            std::string text =
+                "Remote-console paste utility.\r\n\r\n"
+                "Hotkeys:\r\n"
+                "  Ctrl+Alt+V   Paste clipboard into the focused console\r\n"
+                "  Ctrl+Alt+Q   Quit\r\n"
+                "  Ctrl+Alt++   Increase paste speed\r\n"
+                "  Ctrl+Alt+-   Decrease paste speed\r\n"
+                "  ESC          Abort a paste in progress\r\n"
+                "\r\n"
+                "Fork:     " + constants::PRODUCT_INFO + "\r\n"
+                "Upstream: " + constants::PRODUCT_UPSTREAM + "\r\n"
+                "\r\n"
+                "Authors: " + constants::PRODUCT_AUTHOR + "\r\n"
+                "License: MIT";
+            MessageBoxA(hwnd_, text.c_str(), caption.c_str(),
+                        MB_OK | MB_ICONINFORMATION | MB_TOPMOST | MB_SETFOREGROUND);
+            return;
+        }
+        if (cmd > IDM_SPEED_BASE && cmd <= IDM_SPEED_BASE + 5) {
+            int new_level = (int)(cmd - IDM_SPEED_BASE);
+            if (new_level != g_speed_level) {
+                g_speed_level = new_level;
+                save_config();
+            }
+            if (speed_ind_) speed_ind_->Show(g_speed_level);
+            UpdateTooltip();
+            return;
+        }
+        if (cmd > IDM_DELAY_BASE && cmd <= IDM_DELAY_BASE + 11) {
+            int new_delay = (int)(cmd - IDM_DELAY_BASE) - 1;
+            if (new_delay >= 0 && new_delay <= 10 &&
+                new_delay != g_first_char_delay_sec)
+            {
+                g_first_char_delay_sec = new_delay;
+                save_config();
+                UpdateTooltip();
+            }
+            return;
+        }
+    }
+
+    HWND  hwnd_;
+    HICON hIcon_;
+    UINT  wm_taskbar_created_;
+    SpeedIndicator_handler* speed_ind_;
+    bool  icon_added_;
+};
+
 class HotKey_handler {
 public:
     enum {
@@ -681,6 +974,10 @@ HotKey_handler::HotKey_handler() {
 
     ProgressBar_handler progress_bar;
     SpeedIndicator_handler speed_ind;
+    // Tray icon shares this scope so its NIM_DELETE runs (in the dtor)
+    // before wWinMain returns and the process exits. Constructed after
+    // speed_ind because it holds a pointer to it.
+    TrayIcon_handler tray(&speed_ind);
 
     if (RegisterHotKey(NULL, PASTE_KEYID, MOD_CONTROL | MOD_ALT | MOD_NOREPEAT, VK_V))
     {
@@ -767,6 +1064,7 @@ HotKey_handler::HotKey_handler() {
                     save_config();
                 }
                 speed_ind.Show(g_speed_level);
+                tray.UpdateTooltip();
             }
             else if (msg.wParam == SLOWER_KEYID || msg.wParam == SLOWER_NUM_KEYID) {
                 if (g_speed_level > 1) {
@@ -774,6 +1072,7 @@ HotKey_handler::HotKey_handler() {
                     save_config();
                 }
                 speed_ind.Show(g_speed_level);
+                tray.UpdateTooltip();
             }
             else if (msg.wParam == QUIT_KEYID) {
                 odprintf("WM_HOTKEY quit received\n");
@@ -945,16 +1244,16 @@ int APIENTRY wWinMain(_In_ HINSTANCE hInstance, _In_opt_ HINSTANCE hPrevInstance
             save_config();
         }
     }
-    std::string MsgBoxText = "This utility lets you paste content from clipboard into a remote console\n\nUsage:\nCTRL+ALT+V to paste.\nCTRL+ALT+Q to quit.\nCTRL+ALT++ / CTRL+ALT+- to adjust paste speed (1=slowest, 5=fastest, default=3).\nESC to abort a paste in progress.\n\nFor more info: " + constants::PRODUCT_INFO;
-    std::string MsxBoxCaption = constants::PRODUCT_NAME + " " + constants::PRODUCT_VERSION + " by " + constants::PRODUCT_AUTHOR;
-
-    MessageBoxA(NULL, MsgBoxText.c_str(), MsxBoxCaption.c_str(), MB_OK | MB_ICONINFORMATION | MB_TOPMOST | MB_SETFOREGROUND | MB_DEFAULT_DESKTOP_ONLY);
+    // The former intro MessageBoxA was replaced by the system-tray icon
+    // (with a "Paster++ is running" balloon at startup, plus an "About"
+    // entry in its right-click menu). This keeps the app unobtrusive and
+    // avoids blocking on an OK click every launch.
 
     clear_message_queue();
     force_eng_kbd_layout();
     {
         // Stack-scoped: dtor runs when the message loop exits via PostQuitMessage,
-        // which cleans up the progress bar and speed indicator windows.
+        // which cleans up the progress bar, speed indicator and tray-icon windows.
         HotKey_handler hot_key;
     }
     timeEndPeriod(1);

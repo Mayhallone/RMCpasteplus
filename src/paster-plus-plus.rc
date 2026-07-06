@@ -1,5 +1,12 @@
 #include <winver.h>
 
+// Application icon — used for the exe icon, Alt-Tab thumbnail, and the
+// tray icon at runtime. ID must match the IDI_MAIN definition in the C++
+// side. Path is resolved relative to include directories set in CMake
+// (repo root is added there so the icon can live at ../pasteicon.ico).
+#define IDI_MAIN 101
+IDI_MAIN ICON "pasteicon.ico"
+
 VS_VERSION_INFO VERSIONINFO
  FILEVERSION    1,0,0,0
  PRODUCTVERSION 1,0,0,0
@@ -17,11 +24,11 @@ BEGIN
     BEGIN
         BLOCK "040904b0"
         BEGIN
-            VALUE "CompanyName",      "Daniel Alfredsson"
-            VALUE "FileDescription",  "Paster++ remote console paste utility"
+            VALUE "CompanyName",      "Mayhallone (fork of Daniel Alfredsson)"
+            VALUE "FileDescription",  "Paster++ remote console paste utility (Mayhallone fork)"
             VALUE "FileVersion",      "1.0.0.0"
             VALUE "InternalName",     "Paster-plus-plus"
-            VALUE "LegalCopyright",   "Copyright (C) 2021 Daniel Alfredsson"
+            VALUE "LegalCopyright",   "Copyright (C) 2021 Daniel Alfredsson, (C) 2025 Mayhallone"
             VALUE "OriginalFilename", "Paster-plus-plus.exe"
             VALUE "ProductName",      "Paster++"
             VALUE "ProductVersion",   "1.0.0.0"
